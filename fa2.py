@@ -16,30 +16,23 @@ M = tkl.sym.M
 K = tkl.sym.K
 
 @tk.gen.thread(M)
-def softmax(input: tkl.KernelBuffer[M, K], output: tkl.KernelBuffer[M, K]):
-    row_index = tkl.program_id(0)
-    row = input[row_index, :]
-    row_minus_max = row - torch.max(row)
-    numerator = torch.exp(row_minus_max)
-    denominator = torch.sum(numerator)
-    softmax_output = numerator / denominator
-    output[row_index, :] = softmax_output
+def fa2(input: tkl.KernelBuffer[M, K], output: tkl.KernelBuffer[M, K]):
+    pass
 
-
-trace = softmax._trace
-print(trace.region_graph)
+gm = fa2._trace.gm
+print(gm.graph)
 mb = builder.ModuleBuilder()
 with indexing.IndexingContext() as idxc:
     idxc.bind_constant(M, 128)
     idxc.bind_constant(K, 64)
 
     sig = kernel_codegen.KernelSignature()
-    sig.add_from_graph_placeholders(trace.get_root_graph())
-    sig.add_grid(softmax.grid_type)
+    sig.add_from_graph_placeholders(gm.graph)
+    sig.add_grid(fa2.grid_type)
     print(sig)
     bound_sig, func_op = kernel_codegen.FunctionalKernelSignature.create(sig, mb)
-    emitter = vector_codegen.ThreadEmitter(bound_sig, trace)
-    emitter.emit()
+    emitter = vector_codegen.ThreadEmitter(bound_sig)
+    emitter.emit_graph(gm.graph)
     emitter.finish()
     print(mb.module_op.get_asm())
     mb.module_op.verify()

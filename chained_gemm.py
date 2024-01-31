@@ -51,7 +51,7 @@ def chain_gemm(
 
         return (acc,)
 
-    tkl.store(O, (batch, head, grid_n * BLOCK_M, 0), acc)
+    tkl.store(O, (batch, head, grid_n * BLOCK_M, 0), body[0])
 
 
 trace = chain_gemm._trace

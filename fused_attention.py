@@ -1,15 +1,6 @@
 import torch
 import shark_turbine.kernel as tk
 
-from shark_turbine.kernel.compiler import (
-    builder,
-    kernel_codegen,
-    vector_codegen,
-)
-from shark_turbine.kernel._support import (
-    indexing,
-)
-
 import shark_turbine.kernel.lang as tkl
 
 BATCH = tkl.sym.BATCH
@@ -23,10 +14,10 @@ BLOCK_M = tkl.sym.BLOCK_M
 
 @tk.gen.thread(N_CTX // BLOCK_M, BATCH * N_HEADS)
 def fused_attention(
-    Q: tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
-    K: tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
-    V: tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
-    O: tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
+    Q: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
+    K: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
+    V: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
+    O: tkl.OutputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
 ):
     grid_n = tkl.program_id(0)
     grid_m = tkl.program_id(1)
@@ -35,16 +26,16 @@ def fused_attention(
     head = grid_m % N_HEADS
 
     q = tkl.load(Q, (batch, head, grid_n * BLOCK_M, 0), (BLOCK_M, D_HEAD))
-    acc_init = tkl.constant((BLOCK_M, D_HEAD), torch.float32, 0.0)
-    max_stat_init = tkl.constant((BLOCK_M,), torch.float32, -1e9)
-    sum_stat_init = tkl.constant((BLOCK_M,), torch.float32, 0.0)
+    acc_init = tkl.constant((BLOCK_M, D_HEAD), tkl.f32, 0.0)
+    max_stat_init = tkl.constant((BLOCK_M,), tkl.f32, -1e9)
+    sum_stat_init = tkl.constant((BLOCK_M,), tkl.f32, 0.0)
 
     @tkl.for_loop(0, N_CTX, BLOCK_N, init_args=[max_stat_init, sum_stat_init, acc_init])
     def body(i, old_max, old_sum, old_acc):
         k = tkl.load(K, (batch, head, i, 0), (BLOCK_N, D_HEAD))
         kT = tkl.transpose(k, (1, 0))
 
-        qkT = tkl.constant((BLOCK_M, BLOCK_N), torch.float32, 0.0)
+        qkT = tkl.constant((BLOCK_M, BLOCK_N), tkl.f32, 0.0)
         qkT = tkl.dot(q, kT, qkT)
 
         new_max = tkl.max(qkT, axis=1, acc=old_max)
@@ -65,40 +56,22 @@ def fused_attention(
 
     sum_stat = body[1]
     result = body[2]
-    one = tkl.constant((BLOCK_M,), torch.float32, 1.0)
-    one_by_sum = (one / sum_stat)
+    one = tkl.constant((BLOCK_M,), tkl.f32, 1.0)
+    one_by_sum = one / sum_stat
     result = tkl.broadcast_in_dim(one_by_sum, (BLOCK_M, D_HEAD), (0,)) * result
 
     tkl.store(O, (batch, head, grid_n * BLOCK_M, 0), result)
 
 
-trace = fused_attention._trace
-print(trace.region_graph)
-mb = builder.ModuleBuilder()
-with indexing.IndexingContext() as idxc:
-    idxc.bind_shaped(
-        "Q", tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD], (4, 48, 4096, 64)
-    )
-    idxc.bind_shaped(
-        "K", tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD], (4, 48, 4096, 64)
-    )
-    idxc.bind_shaped(
-        "V", tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD], (4, 48, 4096, 64)
-    )
-    idxc.bind_shaped(
-        "O", tkl.KernelBuffer[BATCH, N_HEADS, N_CTX, D_HEAD], (4, 48, 4096, 64)
-    )
-    idxc.bind_constant(BLOCK_M, 128)
-    idxc.bind_constant(BLOCK_N, 64)
-    idxc.finalize()
+Q = torch.randn(4, 48, 4096, 64)
+K = torch.randn(4, 48, 4096, 64)
+V = torch.randn(4, 48, 4096, 64)
+O = torch.randn(4, 48, 4096, 64)
 
-    sig = kernel_codegen.KernelSignature()
-    sig.add_from_graph_placeholders(trace.get_root_graph())
-    sig.add_grid(fused_attention.grid_type)
-    print(sig)
-    bound_sig, func_op = kernel_codegen.FunctionalKernelSignature.create(sig, mb)
-    emitter = vector_codegen.ThreadEmitter(bound_sig, trace)
-    emitter.emit()
-    emitter.finish()
-    print(mb.module_op.get_asm())
-    mb.module_op.verify()
+with tk.gen.TestLaunchContext(
+    {
+        BLOCK_N: 128,
+        BLOCK_M: 256,
+    }
+):
+    fused_attention(Q, K, V, O)

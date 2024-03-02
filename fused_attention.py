@@ -14,10 +14,10 @@ BLOCK_M = tkl.sym.BLOCK_M
 
 @tk.gen.thread(N_CTX // BLOCK_M, BATCH * N_HEADS)
 def fused_attention(
-    Q: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
-    K: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
-    V: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
-    O: tkl.OutputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD],
+    Q: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD, tkl.f16],
+    K: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD, tkl.f16],
+    V: tkl.InputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD, tkl.f16],
+    O: tkl.OutputBuffer[BATCH, N_HEADS, N_CTX, D_HEAD, tkl.f16],
 ):
     grid_n = tkl.program_id(0)
     grid_m = tkl.program_id(1)
@@ -50,7 +50,8 @@ def fused_attention(
         new_acc = old_acc * broadcasted_scale_factor
 
         v = tkl.load(V, (batch, head, i, 0), (BLOCK_N, D_HEAD))
-        new_acc = tkl.dot(qkT, v, new_acc)
+        qkT16 = tkl.to_dtype(qkT, tkl.f16)
+        new_acc = tkl.dot(qkT16, v, new_acc)
 
         return (new_max, new_sum, new_acc)
 
@@ -59,7 +60,6 @@ def fused_attention(
     one = tkl.constant((BLOCK_M,), tkl.f32, 1.0)
     one_by_sum = one / sum_stat
     result = tkl.broadcast_in_dim(one_by_sum, (BLOCK_M, D_HEAD), (0,)) * result
-
     tkl.store(O, (batch, head, grid_n * BLOCK_M, 0), result)
 
 

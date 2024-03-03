@@ -10,7 +10,7 @@ K = tkl.sym.K
 
 
 @tk.gen.thread(M)
-def softmax(input: tkl.InputBuffer[M, K], output: tkl.OutputBuffer[M, K]):
+def softmax(input: tkl.InputBuffer[M, K, tkl.f32], output: tkl.OutputBuffer[M, K, tkl.f32]):
     row_index = tkl.program_id(0)
     row = tkl.load(input, (row_index, 0), (1, K))
     row_minus_max = row - tkl.max(row)
@@ -20,7 +20,7 @@ def softmax(input: tkl.InputBuffer[M, K], output: tkl.OutputBuffer[M, K]):
     tkl.store(output, (row_index, 0), softmax_output)
 
 
-input = tkl.InputBuffer[M, K](torch.randn(128, 256))
-output = tkl.OutputBuffer[M, K](torch.zeros(128, 256))
+input = torch.randn(128, 256)
+output = torch.zeros(128, 256)
 with TestLaunchContext({M: 128}):
-    softmax[128](input, output)
+    softmax(input, output)
